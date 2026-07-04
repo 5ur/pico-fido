@@ -568,12 +568,19 @@ static bool check_crc(const otp_config_t *data) {
     return crc == 0xF0B8;
 }
 
+static bool otp_slot_offset_valid(uint8_t p1, uint8_t p2) {
+    if (p1 == 0x01 || p1 == 0x04 || p1 == 0x20 || p1 == 0x30) {
+        return p2 <= 3;
+    }
+    return p2 == 0;
+}
+
 bool _is_otp = false;
 static int cmd_otp(void) {
     uint8_t p1 = P1(apdu), p2 = P2(apdu);
     if (p1 == 0x01 || p1 == 0x03) { // Configure slot
         otp_config_t *odata = (otp_config_t *) apdu.data;
-        if (p1 == 0x03 && p2 != 0x0) {
+        if (!otp_slot_offset_valid(p1, p2)) {
             return SW_INCORRECT_P1P2();
         }
         uint16_t slot = (p1 == 0x01 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
@@ -612,7 +619,7 @@ static int cmd_otp(void) {
     }
     else if (p1 == 0x04 || p1 == 0x05) { // Update slot
         otp_config_t *odata = (otp_config_t *) apdu.data;
-        if (p1 == 0x05 && p2 != 0x0) {
+        if (!otp_slot_offset_valid(p1, p2)) {
             return SW_INCORRECT_P1P2();
         }
         uint16_t slot = (p1 == 0x04 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
@@ -661,30 +668,65 @@ static int cmd_otp(void) {
         uint16_t len1 = 0, len2 = 0;
         bool ef1_data = false, ef2_data = false;
         uint16_t slot1 = EF_OTP_SLOT1, slot2 = EF_OTP_SLOT2;
-        if (apdu.ne > 0) {
-            if (apdu.ne != 2) {
+        uint8_t access_code[ACC_CODE_SIZE] = { 0 };
+        if (_is_otp) {
+            if (apdu.nc != 64) {
+                return SW_WRONG_LENGTH();
+            }
+            for (size_t i = 2 + ACC_CODE_SIZE; i < apdu.nc; i++) {
+                if (apdu.data[i] != 0) {
+                    return SW_WRONG_DATA();
+                }
+            }
+            slot1 += apdu.data[0];
+            slot2 += apdu.data[1];
+            memcpy(access_code, apdu.data + 2, sizeof(access_code));
+        }
+        else if (apdu.nc != 0) {
+            if (apdu.nc != 2 && apdu.nc != 2 + ACC_CODE_SIZE) {
                 return SW_WRONG_LENGTH();
             }
             slot1 += apdu.data[0];
             slot2 += apdu.data[1];
+            if (apdu.nc == 2 + ACC_CODE_SIZE) {
+                memcpy(access_code, apdu.data + 2, sizeof(access_code));
+            }
+        }
+        if (slot1 > EF_OTP_SLOT1 + 3 || slot2 > EF_OTP_SLOT1 + 3 || slot1 == slot2) {
+            mbedtls_platform_zeroize(access_code, sizeof(access_code));
+            return SW_INCORRECT_P1P2();
         }
         file_t *ef1 = file_new(slot1);
         file_t *ef2 = file_new(slot2);
         if (file_has_data(ef1)) {
             if (otp_slot_load(ef1, data1, &len1) != PICOKEYS_OK) {
+                mbedtls_platform_zeroize(access_code, sizeof(access_code));
                 return SW_EXEC_ERROR();
             }
             ef1_data = true;
+            if (mbedtls_ct_memcmp(((otp_config_t *)data1)->acc_code, access_code, sizeof(access_code)) != 0) {
+                mbedtls_platform_zeroize(data1, sizeof(data1));
+                mbedtls_platform_zeroize(access_code, sizeof(access_code));
+                return SW_SECURITY_STATUS_NOT_SATISFIED();
+            }
         }
         if (file_has_data(ef2)) {
             if (otp_slot_load(ef2, data2, &len2) != PICOKEYS_OK) {
                 mbedtls_platform_zeroize(data1, sizeof(data1));
+                mbedtls_platform_zeroize(access_code, sizeof(access_code));
                 return SW_EXEC_ERROR();
             }
             ef2_data = true;
+            if (mbedtls_ct_memcmp(((otp_config_t *)data2)->acc_code, access_code, sizeof(access_code)) != 0) {
+                mbedtls_platform_zeroize(data1, sizeof(data1));
+                mbedtls_platform_zeroize(data2, sizeof(data2));
+                mbedtls_platform_zeroize(access_code, sizeof(access_code));
+                return SW_SECURITY_STATUS_NOT_SATISFIED();
+            }
             if (otp_slot_store(ef1, data2, len2) != PICOKEYS_OK) {
                 mbedtls_platform_zeroize(data1, sizeof(data1));
                 mbedtls_platform_zeroize(data2, sizeof(data2));
+                mbedtls_platform_zeroize(access_code, sizeof(access_code));
                 return SW_EXEC_ERROR();
             }
         }
@@ -697,6 +739,7 @@ static int cmd_otp(void) {
             if (otp_slot_store(ef2, data1, len1) != PICOKEYS_OK) {
                 mbedtls_platform_zeroize(data1, sizeof(data1));
                 mbedtls_platform_zeroize(data2, sizeof(data2));
+                mbedtls_platform_zeroize(access_code, sizeof(access_code));
                 return SW_EXEC_ERROR();
             }
         }
@@ -705,6 +748,7 @@ static int cmd_otp(void) {
         }
         mbedtls_platform_zeroize(data1, sizeof(data1));
         mbedtls_platform_zeroize(data2, sizeof(data2));
+        mbedtls_platform_zeroize(access_code, sizeof(access_code));
         flash_commit();
         config_seq++;
         return otp_status(_is_otp);
@@ -721,7 +765,7 @@ static int cmd_otp(void) {
         otp_status_ext();
     }
     else if (p1 == 0x30 || p1 == 0x38 || p1 == 0x20 || p1 == 0x28) { // Calculate OTP
-        if ((p1 == 0x38 || p1 == 0x28) && p2 != 0x0) {
+        if (!otp_slot_offset_valid(p1, p2)) {
             return SW_INCORRECT_P1P2();
         }
         uint16_t slot = (p1 == 0x30 || p1 == 0x20 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
