@@ -31,6 +31,9 @@ INS_CALCULATE = 0xa2
 INS_VALIDATE = 0xa3
 INS_CALC_ALL = 0xa4
 INS_SEND_REMAINING = 0xa5
+INS_SET_PIN = 0xb4
+INS_CHANGE_PIN = 0xb3
+INS_VERIFY_PIN = 0xb2
 
 RESP_MORE_DATA = 0x61
 
@@ -46,6 +49,8 @@ TAG_VERSION = 0x79
 TAG_IMF = 0x7a
 TAG_ALGO = 0x7b
 TAG_TOUCH_RESPONSE = 0x7c
+TAG_PASSWORD = 0x80
+TAG_NEW_PASSWORD = 0x81
 
 TYPE_MASK = 0xf0
 TYPE_HOTP = 0x10
@@ -62,6 +67,53 @@ PROP_REQUIRE_TOUCH = 0x02
 
 def test_select_oath(select_oath):
     pass
+
+def test_otp_pin_set_verify_and_change(reset_oath):
+    old_pin = list(b"123456")
+    new_pin = list(b"654321")
+
+    send_apdu(
+        reset_oath,
+        INS_SET_PIN,
+        p1=0,
+        p2=0,
+        data=[TAG_PASSWORD, len(old_pin)] + old_pin,
+    )
+    send_apdu(
+        reset_oath,
+        INS_VERIFY_PIN,
+        p1=0,
+        p2=0,
+        data=[TAG_PASSWORD, len(old_pin)] + old_pin,
+    )
+    send_apdu(
+        reset_oath,
+        INS_CHANGE_PIN,
+        p1=0,
+        p2=0,
+        data=(
+            [TAG_PASSWORD, len(old_pin)] + old_pin +
+            [TAG_NEW_PASSWORD, len(new_pin)] + new_pin
+        ),
+    )
+
+    with pytest.raises(APDUResponse) as e:
+        send_apdu(
+            reset_oath,
+            INS_VERIFY_PIN,
+            p1=0,
+            p2=0,
+            data=[TAG_PASSWORD, len(old_pin)] + old_pin,
+        )
+    assert [e.value.sw1, e.value.sw2] == [0x69, 0x82]
+
+    send_apdu(
+        reset_oath,
+        INS_VERIFY_PIN,
+        p1=0,
+        p2=0,
+        data=[TAG_PASSWORD, len(new_pin)] + new_pin,
+    )
 
 def list_apdu(ccid_card):
     resp = send_apdu(ccid_card, INS_LIST, p1=0, p2=0)
