@@ -25,10 +25,10 @@
 #include "credential.h"
 #include "mbedtls/constant_time.h"
 
-uint8_t rp_counter = 1;
-uint8_t rp_total = 0;
-uint8_t cred_counter = 1;
-uint8_t cred_total = 0;
+uint16_t rp_counter = 1;
+uint16_t rp_total = 0;
+uint16_t cred_counter = 1;
+uint16_t cred_total = 0;
 CborByteString rpIdHashx = { 0 };
 
 int cbor_cred_mgmt(const uint8_t *data, size_t len) {
@@ -172,7 +172,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
                 CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
             }
         }
-        uint8_t skip = 0;
+        uint16_t skip = 0;
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *tef = file_search((uint16_t)(EF_RP + i));
             if (file_has_data(tef) && *file_get_data(tef) > 0) {
@@ -247,7 +247,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
             rpIdHash = rpIdHashx;
         }
         file_t *cred_ef = NULL;
-        uint8_t skip = 0;
+        uint16_t skip = 0;
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *tef = file_search((uint16_t)(EF_CRED + i));
             if (file_has_data(tef) && memcmp(file_get_data(tef), rpIdHash.data, 32) == 0) {
