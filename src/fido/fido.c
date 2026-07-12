@@ -18,6 +18,7 @@
 #include "picokeys.h"
 #include "button.h"
 #include "fido.h"
+#include "led/led.h"
 #include "serial.h"
 #include "apdu.h"
 #include "ctap.h"
@@ -545,6 +546,12 @@ bool check_user_presence(void) {
         //user_present_time_limit = board_millis();
     }
     return true;
+}
+
+void fido_led_3_blinks(void) {
+#ifndef ENABLE_EMULATION
+    led_blink_n_times(3, LED_COLOR_GREEN, 100, 100);
+#endif
 }
 
 uint32_t get_sign_counter(void) {

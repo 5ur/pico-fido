@@ -221,6 +221,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     mbedtls_sha256((uint8_t *) rpId.data, rpId.len, rp_id_hash, 0);
 
     bool resident = false;
+    bool button_pressed = false;
     uint8_t numberOfCredentials = 0;
     Credential *selcred = NULL;
     if (next == false) {
@@ -229,6 +230,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                 if (check_user_presence() == false) {
                     CBOR_ERROR(CTAP2_ERR_OPERATION_DENIED);
                 }
+                button_pressed = phy_data.up_btn != 0;
                 if (!file_has_data(ef_pin)) {
                     CBOR_ERROR(CTAP2_ERR_PIN_NOT_SET);
                 }
@@ -457,6 +459,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                     if (check_user_presence() == false) {
                         CBOR_ERROR(CTAP2_ERR_OPERATION_DENIED);
                     }
+                    button_pressed = phy_data.up_btn != 0;
                 }
             }
             else {
@@ -464,6 +467,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                     if (check_user_presence() == false) {
                         CBOR_ERROR(CTAP2_ERR_OPERATION_DENIED);
                     }
+                    button_pressed = phy_data.up_btn != 0;
                 }
             }
             flags |= FIDO2_AUT_FLAG_UP;
@@ -802,6 +806,9 @@ err:
             return CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
         }
         return error;
+    }
+    if (!button_pressed) {
+        fido_led_3_blinks();
     }
     res_APDU_size = (uint16_t)resp_size;
     return 0;
