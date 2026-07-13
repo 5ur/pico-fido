@@ -231,7 +231,7 @@ err:
 
 int preview_sign_attestation(const uint8_t rp_id_hash[32], int64_t sign_alg, uint8_t outer_flags, const uint8_t *client_data_hash, size_t client_data_hash_len, const uint8_t *kh, size_t kh_len, preview_sign_flags_t sign_flags, mbedtls_ecp_keypair *key, uint8_t **att_obj, size_t *att_obj_len) {
     uint8_t cose[256] = {0}, extensions[64] = {0};
-    uint8_t hash[32] = {0}, signature[MBEDTLS_ECDSA_MAX_LEN] = {0};
+    uint8_t hash[64] = {0}, signature[MBEDTLS_ECDSA_MAX_LEN] = {0};
     uint8_t *auth_data = NULL, *signed_data = NULL, *out = NULL;
     size_t cose_len, extensions_len, auth_data_len, signature_len = 0, out_len;
     CborEncoder encoder, map, inner;
