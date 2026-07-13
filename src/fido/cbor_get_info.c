@@ -101,7 +101,7 @@ int cbor_get_info(void) {
     CBOR_CHECK(cbor_encoder_close_container(&mapEncoder, &arrayEncoder));
 
     CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x02));
-    CBOR_CHECK(cbor_encoder_create_array(&mapEncoder, &arrayEncoder, 8 + (file_has_data(ef_pin_policy) ? 1 : 0)));
+    CBOR_CHECK(cbor_encoder_create_array(&mapEncoder, &arrayEncoder, 9 + (file_has_data(ef_pin_policy) ? 1 : 0)));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "uvm"));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "credBlob"));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "credProtect"));
@@ -110,6 +110,7 @@ int cbor_get_info(void) {
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "minPinLength"));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "hmac-secret-mc"));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "thirdPartyPayment"));
+    CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "previewSign"));
     if (file_has_data(ef_pin_policy)) {
         CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "pinComplexityPolicy"));
     }

@@ -26,7 +26,7 @@ from fido2.ctap2.pin import ClientPin
 from fido2.server import Fido2Server
 from fido2.ctap import CtapError
 from fido2.webauthn import PublicKeyCredentialParameters, PublicKeyCredentialType, PublicKeyCredentialCreationOptions, PublicKeyCredentialRpEntity, PublicKeyCredentialUserEntity, AuthenticatorSelectionCriteria, UserVerificationRequirement, PublicKeyCredentialRequestOptions
-from fido2.ctap2.extensions import HmacSecretExtension, LargeBlobExtension, CredBlobExtension, CredProtectExtension, MinPinLengthExtension, CredPropsExtension, ThirdPartyPaymentExtension
+from fido2.ctap2.extensions import HmacSecretExtension, LargeBlobExtension, CredBlobExtension, CredProtectExtension, MinPinLengthExtension, CredPropsExtension, ThirdPartyPaymentExtension, PreviewSignExtension
 from utils import *
 from fido2.cose import ES256
 import sys
@@ -111,7 +111,8 @@ class Device():
             CredProtectExtension(),
             MinPinLengthExtension(),
             CredPropsExtension(),
-            ThirdPartyPaymentExtension()
+            ThirdPartyPaymentExtension(),
+            PreviewSignExtension()
         ]
         self.__client = Fido2Client(self.__dev, client_data_collector=DefaultClientDataCollector(self.__origin, verify=Device.__verify_rp), user_interaction=self.__user_interaction, extensions=extensions)
 

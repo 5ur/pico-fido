@@ -24,6 +24,7 @@
 #include "files.h"
 #include "apdu.h"
 #include "credential.h"
+#include "preview_sign.h"
 #include "mbedtls/sha256.h"
 #include "random.h"
 #include "crypto_utils.h"
@@ -58,15 +59,24 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
     uint64_t pinUvAuthProtocol = 0, enterpriseAttestation = 0, hmacSecretPinUvAuthProtocol = 1;
     int64_t kty = 2, hmac_alg = 0, crv = 0;
     CborByteString kax = { 0 }, kay = { 0 }, salt_enc = { 0 }, salt_auth = { 0 };
-    bool hmac_secret_mc = false, has_credprot = false;
+    bool hmac_secret_mc = false, has_credprot = false, has_preview_sign = false;
     const bool *pin_complexity_policy = NULL, *uvm = NULL;
     uint8_t *aut_data = NULL;
     size_t resp_size = 0;
     CredExtensions extensions = { 0 };
-    //options.present = true;
-    //options.up = ptrue;
+    int64_t sign_alg = 0;
+    preview_sign_flags_t sign_flags = PREVIEW_SIGN_FLAG_REQUIRE_UP;
+    // options.present = true;
+    // options.up = ptrue;
     options.uv = pfalse;
     //options.rk = pfalse;
+
+    uint8_t *preview_sign_handle = NULL;
+    size_t preview_sign_handle_len = 0;
+    uint8_t *preview_sign_att_obj = NULL;
+    size_t preview_sign_att_obj_len = 0;
+    mbedtls_ecp_keypair preview_sign_key;
+    mbedtls_ecp_keypair_init(&preview_sign_key);
 
     CBOR_CHECK(cbor_parser_init(data, len, 0, &parser, &map));
     uint64_t val_c = 1;
@@ -173,6 +183,55 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
                         }
                         else if (ukey == 0x04) {
                             CBOR_FIELD_GET_UINT(hmacSecretPinUvAuthProtocol, 3);
+                        }
+                        else {
+                            CBOR_ADVANCE(3);
+                        }
+                    }
+                    CBOR_PARSE_MAP_END(_f2, 3);
+                    continue;
+                }
+                if (strcmp(_fd2, "previewSign") == 0) {
+                    has_preview_sign = true;
+                    uint64_t ukey = 0;
+                    CBOR_PARSE_MAP_START(_f2, 3)
+                    {
+                        CBOR_FIELD_GET_UINT(ukey, 3);
+                        if (ukey == 0x03) {
+                            int64_t uval = 0;
+                            CBOR_PARSE_ARRAY_START(_f3, 4)
+                            {
+                                CBOR_FIELD_GET_INT(uval, 4);
+                                if (uval == FIDO2_ALG_ES256
+                                    || uval == FIDO2_ALG_ESP256
+                                    || uval == FIDO2_ALG_ES384
+                                    || uval == FIDO2_ALG_ESP384
+                                    || uval == FIDO2_ALG_ES512
+                                    || uval == FIDO2_ALG_ESP512
+#ifdef MBEDTLS_EDDSA_C
+                                    || uval == FIDO2_ALG_EDDSA
+#endif
+                                ) {
+                                    if (sign_alg == 0) {
+                                        sign_alg = uval;
+                                    }
+                                }
+                            }
+                            CBOR_PARSE_ARRAY_END(_f3, 4);
+
+                            if (sign_alg == 0) {
+                                CBOR_ERROR(CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+                            }
+                        }
+                        else if (ukey == 0x04) {
+                            uint64_t uval = 0;
+                            CBOR_FIELD_GET_UINT(uval, 3);
+                            if (uval == PREVIEW_SIGN_FLAG_UNATTENDED || uval == PREVIEW_SIGN_FLAG_REQUIRE_UP || uval == PREVIEW_SIGN_FLAG_REQUIRE_UV) {
+                                sign_flags = (preview_sign_flags_t) uval;
+                            }
+                            else {
+                                CBOR_ERROR(CTAP2_ERR_INVALID_OPTION);
+                            }
                         }
                         else {
                             CBOR_ADVANCE(3);
@@ -490,12 +549,19 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         key_seed_len = sizeof(cred_idr);
     }
 
+    if (has_preview_sign) {
+        int ret = preview_sign_create(key_seed, key_seed_len, rp_id_hash, sign_alg, sign_flags, &preview_sign_handle, &preview_sign_handle_len, &preview_sign_key);
+        if (ret != 0) {
+            CBOR_ERROR(ret);
+        }
+    }
+
     if (getUserVerifiedFlagValue()) {
         flags |= FIDO2_AUT_FLAG_UV;
     }
     size_t ext_len = 0;
     uint8_t ext[512] = {0};
-    CborEncoder encoder, mapEncoder, mapEncoder2;
+    CborEncoder encoder, mapEncoder, mapEncoder2, mapEncoder3;
     if (extensions.present == true) {
         cbor_encoder_init(&encoder, ext, sizeof(ext), 0);
         int l = 0;
@@ -517,6 +583,9 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
             l++;
         }
         if (extensions.thirdPartyPayment == ptrue) {
+            l++;
+        }
+        if (has_preview_sign) {
             l++;
         }
         if (hmac_secret_mc) {
@@ -559,6 +628,13 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
             if (minPinLen > 0) {
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, "minPinLength"));
                 CBOR_CHECK(cbor_encode_uint(&mapEncoder, minPinLen));
+            }
+            if (has_preview_sign) {
+                CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, PREVIEW_SIGN_NAME));
+                CBOR_CHECK(cbor_encoder_create_map(&mapEncoder, &mapEncoder2, 1));
+                CBOR_CHECK(cbor_encode_uint(&mapEncoder2, 3)); // alg
+                CBOR_CHECK(cbor_encode_int(&mapEncoder2, sign_alg));
+                CBOR_CHECK(cbor_encoder_close_container(&mapEncoder, &mapEncoder2));
             }
             if (extensions.thirdPartyPayment == ptrue) {
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, "thirdPartyPayment"));
@@ -711,6 +787,13 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         CBOR_ERROR(CTAP2_ERR_PROCESSING);
     }
 
+    if (has_preview_sign) {
+        ret = preview_sign_attestation(rp_id_hash, sign_alg, flags, clientDataHash.data, clientDataHash.len, preview_sign_handle, preview_sign_handle_len, sign_flags, &preview_sign_key, &preview_sign_att_obj, &preview_sign_att_obj_len);
+        if (ret != 0) {
+            CBOR_ERROR(ret);
+        }
+    }
+
     uint8_t largeBlobKey[32] = {0};
     if (extensions.largeBlobKey == ptrue && options.rk == ptrue) {
         ret = credential_derive_large_blob_key(key_seed, key_seed_len, largeBlobKey);
@@ -725,6 +808,9 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         lparams++;
     }
     if (extensions.largeBlobKey == ptrue && options.rk == ptrue) {
+        lparams++;
+    }
+    if (has_preview_sign) {
         lparams++;
     }
     CBOR_CHECK(cbor_encoder_create_map(&encoder, &mapEncoder, lparams));
@@ -765,6 +851,16 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x05));
         CBOR_CHECK(cbor_encode_byte_string(&mapEncoder, largeBlobKey, sizeof(largeBlobKey)));
     }
+    if (has_preview_sign) {
+        CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x06));
+        CBOR_CHECK(cbor_encoder_create_map(&mapEncoder, &mapEncoder2, 1));
+        CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder2, PREVIEW_SIGN_NAME));
+        CBOR_CHECK(cbor_encoder_create_map(&mapEncoder2, &mapEncoder3, 1));
+        CBOR_CHECK(cbor_encode_uint(&mapEncoder3, 7));
+        CBOR_CHECK(cbor_encode_byte_string(&mapEncoder3, preview_sign_att_obj, preview_sign_att_obj_len));
+        CBOR_CHECK(cbor_encoder_close_container(&mapEncoder2, &mapEncoder3));
+        CBOR_CHECK(cbor_encoder_close_container(&mapEncoder, &mapEncoder2));
+    }
     mbedtls_platform_zeroize(largeBlobKey, sizeof(largeBlobKey));
     CBOR_CHECK(cbor_encoder_close_container(&encoder, &mapEncoder));
     resp_size = cbor_encoder_get_buffer_size(&encoder, ctap_resp->init.data + 1);
@@ -779,6 +875,15 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
     file_put_data(ef_counter, (uint8_t *) &ctr, sizeof(ctr));
     flash_commit();
 err:
+    if (preview_sign_handle) {
+        mbedtls_platform_zeroize(preview_sign_handle, preview_sign_handle_len);
+        free(preview_sign_handle);
+    }
+    if (preview_sign_att_obj) {
+        mbedtls_platform_zeroize(preview_sign_att_obj, preview_sign_att_obj_len);
+        free(preview_sign_att_obj);
+    }
+    mbedtls_ecp_keypair_free(&preview_sign_key);
     CBOR_FREE_BYTE_STRING(clientDataHash);
     CBOR_FREE_BYTE_STRING(pinUvAuthParam);
     CBOR_FREE_BYTE_STRING(rp.id);

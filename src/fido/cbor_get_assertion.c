@@ -28,7 +28,9 @@
 #include "apdu.h"
 #include "cbor_make_credential.h"
 #include "credential.h"
+#include "preview_sign.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/sha512.h"
 #include "random.h"
 
 int cbor_get_assertion(const uint8_t *data, size_t len, bool next);
@@ -101,7 +103,9 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     bool asserted = false, up = false, uv = false;
     int64_t kty = 2, alg = 0, crv = 0;
     CborByteString kax = { 0 }, kay = { 0 }, salt_enc = { 0 }, salt_auth = { 0 };
+    CborByteString preview_sign_handle = { 0 }, preview_sign_tbs = { 0 }, preview_sign_args = { 0 };
     const bool *credBlob = NULL;
+    bool has_preview_sign = false;
 
     CBOR_CHECK(cbor_parser_init(data, len, 0, &parser, &map));
     uint64_t val_c = 1;
@@ -181,6 +185,28 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                     CBOR_PARSE_MAP_END(_f2, 3);
                     continue;
                 }
+                if (strcmp(_fd2, PREVIEW_SIGN_NAME) == 0) {
+                    uint64_t ukey = 0;
+                    has_preview_sign = true;
+                    CBOR_PARSE_MAP_START(_f2, 3)
+                    {
+                        CBOR_FIELD_GET_UINT(ukey, 3);
+                        if (ukey == 2) {
+                            CBOR_FIELD_GET_BYTES(preview_sign_handle, 3);
+                        }
+                        else if (ukey == 6) {
+                            CBOR_FIELD_GET_BYTES(preview_sign_tbs, 3);
+                        }
+                        else if (ukey == 7) {
+                            CBOR_FIELD_GET_BYTES(preview_sign_args, 3);
+                        }
+                        else {
+                            CBOR_ADVANCE(3);
+                        }
+                    }
+                    CBOR_PARSE_MAP_END(_f2, 3);
+                    continue;
+                }
                 CBOR_FIELD_KEY_TEXT_VAL_BOOL(2, "credBlob", credBlob);
                 CBOR_FIELD_KEY_TEXT_VAL_BOOL(2, "largeBlobKey", extensions.largeBlobKey);
                 CBOR_FIELD_KEY_TEXT_VAL_BOOL(2, "thirdPartyPayment", extensions.thirdPartyPayment);
@@ -211,6 +237,9 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
 
     if (rpId.present == false || clientDataHash.present == false) {
         CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
+    }
+    if (has_preview_sign && (!preview_sign_handle.present || !preview_sign_tbs.present || preview_sign_args.present)) {
+        CBOR_ERROR(CTAP2_ERR_UNSUPPORTED_OPTION);
     }
     rp_id = rpId.data;
     user_name = NULL;
@@ -544,6 +573,56 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         }
     }
 
+    uint8_t preview_sign_sig[MBEDTLS_ECDSA_MAX_LEN] = {0};
+    size_t preview_sign_sig_len = 0;
+    mbedtls_ecp_keypair preview_sign_key;
+    mbedtls_ecp_keypair_init(&preview_sign_key);
+    if (has_preview_sign) {
+        int64_t preview_sign_alg = 0;
+        preview_sign_flags_t preview_sign_flags = PREVIEW_SIGN_FLAG_REQUIRE_UP;
+        if (!selcred || !key_seed) {
+            CBOR_ERROR(CTAP2_ERR_INVALID_CREDENTIAL);
+        }
+        ret = preview_sign_load(key_seed, key_seed_len, rp_id_hash, preview_sign_handle.data, preview_sign_handle.len, &preview_sign_alg, &preview_sign_flags, &preview_sign_key);
+        if (ret != 0) {
+            CBOR_ERROR(ret);
+        }
+        if ((preview_sign_flags == PREVIEW_SIGN_FLAG_REQUIRE_UP && !(flags & FIDO2_AUT_FLAG_UP)) ||
+            (preview_sign_flags == PREVIEW_SIGN_FLAG_REQUIRE_UV && !(flags & FIDO2_AUT_FLAG_UV))) {
+            CBOR_ERROR(preview_sign_flags == PREVIEW_SIGN_FLAG_REQUIRE_UV ? CTAP2_ERR_PUAT_REQUIRED : CTAP2_ERR_UP_REQUIRED);
+        }
+        uint8_t preview_sign_hash[64] = {0};
+        const mbedtls_md_info_t *sign_md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+        if (preview_sign_alg == FIDO2_ALG_ES384 || preview_sign_alg == FIDO2_ALG_ESP384) {
+            sign_md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA384);
+        }
+        else if (preview_sign_alg == FIDO2_ALG_ES512 || preview_sign_alg == FIDO2_ALG_ESP512) {
+            sign_md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA512);
+        }
+#ifdef MBEDTLS_EDDSA_C
+        else if (preview_sign_alg == FIDO2_ALG_EDDSA) {
+            sign_md = NULL;
+        }
+#endif
+        if (sign_md != NULL) {
+            ret = mbedtls_md(sign_md, preview_sign_tbs.data, preview_sign_tbs.len, preview_sign_hash);
+            if (ret != 0) {
+                CBOR_ERROR(CTAP2_ERR_PROCESSING);
+            }
+            ret = mbedtls_ecdsa_write_signature(&preview_sign_key, mbedtls_md_get_type(sign_md), preview_sign_hash, mbedtls_md_get_size(sign_md), preview_sign_sig, sizeof(preview_sign_sig), &preview_sign_sig_len, random_fill_iterator, NULL);
+        }
+#ifdef MBEDTLS_EDDSA_C
+        else {
+            ret = mbedtls_eddsa_write_signature(&preview_sign_key, preview_sign_tbs.data, preview_sign_tbs.len, preview_sign_sig, sizeof(preview_sign_sig), &preview_sign_sig_len, MBEDTLS_EDDSA_PURE, NULL, 0, random_fill_iterator, NULL);
+        }
+#endif
+        mbedtls_platform_zeroize(preview_sign_hash, sizeof(preview_sign_hash));
+        if (ret != 0) {
+            CBOR_ERROR(CTAP2_ERR_PROCESSING);
+        }
+    }
+
     size_t ext_len = 0;
     uint8_t ext[512] = {0};
     if (selcred && extensions.present == true) {
@@ -561,13 +640,15 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         if (extensions.thirdPartyPayment == ptrue) {
             l++;
         }
+        if (has_preview_sign) {
+            l++;
+        }
         if (l > 0) {
             CBOR_CHECK(cbor_encoder_create_map(&encoder, &mapEncoder, l));
             if (credBlob == ptrue) {
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, "credBlob"));
                 if (selcred->extensions.credBlob.present == true) {
-                    CBOR_CHECK(cbor_encode_byte_string(&mapEncoder, selcred->extensions.credBlob.data,
-                                                    selcred->extensions.credBlob.len));
+                    CBOR_CHECK(cbor_encode_byte_string(&mapEncoder, selcred->extensions.credBlob.data, selcred->extensions.credBlob.len));
                 }
                 else {
                     CBOR_CHECK(cbor_encode_byte_string(&mapEncoder, NULL, 0));
@@ -633,6 +714,14 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                 else {
                     CBOR_CHECK(cbor_encode_boolean(&mapEncoder, false));
                 }
+            }
+            if (has_preview_sign) {
+                CborEncoder preview_sign_map;
+                CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, PREVIEW_SIGN_NAME));
+                CBOR_CHECK(cbor_encoder_create_map(&mapEncoder, &preview_sign_map, 1));
+                CBOR_CHECK(cbor_encode_uint(&preview_sign_map, 6));
+                CBOR_CHECK(cbor_encode_byte_string(&preview_sign_map, preview_sign_sig, preview_sign_sig_len));
+                CBOR_CHECK(cbor_encoder_close_container(&mapEncoder, &preview_sign_map));
             }
 
             CBOR_CHECK(cbor_encoder_close_container(&encoder, &mapEncoder));
@@ -783,6 +872,11 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     file_put_data(ef_counter, (uint8_t *) &ctr, sizeof(ctr));
     flash_commit();
 err:
+    mbedtls_ecp_keypair_free(&preview_sign_key);
+    mbedtls_platform_zeroize(preview_sign_sig, sizeof(preview_sign_sig));
+    CBOR_FREE_BYTE_STRING(preview_sign_handle);
+    CBOR_FREE_BYTE_STRING(preview_sign_tbs);
+    CBOR_FREE_BYTE_STRING(preview_sign_args);
     CBOR_FREE_BYTE_STRING(clientDataHash);
     CBOR_FREE_BYTE_STRING(pinUvAuthParam);
     CBOR_FREE_BYTE_STRING(rpId);
