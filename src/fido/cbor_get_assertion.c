@@ -106,6 +106,10 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     CborByteString preview_sign_handle = { 0 }, preview_sign_tbs = { 0 }, preview_sign_args = { 0 };
     const bool *credBlob = NULL;
     bool has_preview_sign = false;
+    uint8_t preview_sign_sig[MBEDTLS_ECDSA_MAX_LEN] = {0};
+    size_t preview_sign_sig_len = 0;
+    mbedtls_ecp_keypair preview_sign_key;
+    mbedtls_ecp_keypair_init(&preview_sign_key);
 
     CBOR_CHECK(cbor_parser_init(data, len, 0, &parser, &map));
     uint64_t val_c = 1;
@@ -239,7 +243,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
     }
     if (has_preview_sign && (!preview_sign_handle.present || !preview_sign_tbs.present || preview_sign_args.present)) {
-        CBOR_ERROR(CTAP2_ERR_UNSUPPORTED_OPTION);
+        CBOR_ERROR(preview_sign_args.present ? CTAP2_ERR_UNSUPPORTED_OPTION : CTAP2_ERR_INVALID_OPTION);
     }
     rp_id = rpId.data;
     user_name = NULL;
@@ -573,10 +577,6 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         }
     }
 
-    uint8_t preview_sign_sig[MBEDTLS_ECDSA_MAX_LEN] = {0};
-    size_t preview_sign_sig_len = 0;
-    mbedtls_ecp_keypair preview_sign_key;
-    mbedtls_ecp_keypair_init(&preview_sign_key);
     if (has_preview_sign) {
         int64_t preview_sign_alg = 0;
         preview_sign_flags_t preview_sign_flags = PREVIEW_SIGN_FLAG_REQUIRE_UP;
