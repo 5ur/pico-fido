@@ -191,8 +191,8 @@ static int cmd_factory_reset(void) {
 
 static const cmd_t cmds[] = {
     { INS_READ_CONFIG, cmd_read_config, CMD_FLAG_NONE },
-    { INS_WRITE_CONFIG, cmd_write_config, CMD_FLAG_AUDIT_LOG },
-    { INS_RESET, cmd_factory_reset, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
+    { INS_WRITE_CONFIG, cmd_write_config, CMD_FLAG_NOTIFY_PLUGIN },
+    { INS_RESET, cmd_factory_reset, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
     { 0x00, 0x0, CMD_FLAG_NONE }
 };
 

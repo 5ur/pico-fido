@@ -23,6 +23,7 @@
 #include "files.h"
 #include "apdu.h"
 #include "mbedtls/sha256.h"
+#include "plugin_policy.h"
 
 static uint64_t expectedLength = 0, expectedNextOffset = 0;
 uint8_t temp_lba[MAX_LARGE_BLOB_SIZE];
@@ -98,6 +99,9 @@ int cbor_large_blobs(const uint8_t *data, size_t len) {
         CBOR_CHECK(cbor_encode_byte_string(&mapEncoder, fragment_len > 0 ? file_get_data(ef_largeblob) + offset : NULL, fragment_len));
     }
     else {
+        if (!fido_plugin_authorize(PICO_FIDO_PLUGIN_OP_LARGE_BLOB_WRITE)) {
+            CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+        }
         if (set.len > MAX_FRAGMENT_LENGTH) {
             CBOR_ERROR(CTAP1_ERR_INVALID_LEN);
         }

@@ -28,6 +28,7 @@
 #include "mbedtls/chachapoly.h"
 #include "mbedtls/hkdf.h"
 #include "mbedtls/x509_csr.h"
+#include "plugin_policy.h"
 
 extern uint8_t keydev_dec[32];
 extern bool has_keydev_dec;
@@ -113,10 +114,11 @@ static int cbor_vendor_generic(uint8_t cmd, const uint8_t *data, size_t len) {
                 CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
             }
             uint8_t zeros[32];
+            file_t *active_key = fido_plugin_active_device_key_file();
             memset(zeros, 0, sizeof(zeros));
             file_put_data(ef_keydev_enc, vendorParam.data, (uint16_t)vendorParam.len);
-            file_put_data(ef_keydev, zeros, file_get_size(ef_keydev)); // Overwrite ef with 0
-            file_put_data(ef_keydev, NULL, 0); // Set ef to 0 bytes
+            file_put_data(active_key, zeros, file_get_size(active_key)); // Overwrite ef with 0
+            file_put_data(active_key, NULL, 0); // Set ef to 0 bytes
             flash_commit();
             goto err;
         }
@@ -267,6 +269,21 @@ err:
 int cbor_vendor(const uint8_t *data, size_t len) {
     if (len == 0) {
         return CTAP1_ERR_INVALID_LEN;
+    }
+    pico_fido_plugin_vendor_t vendor = {
+        .struct_size = sizeof(vendor),
+        .request = data,
+        .request_len = (uint32_t)len,
+        .response = ctap_resp->init.data + 1,
+        .response_capacity = CTAP_MAX_CBOR_PAYLOAD,
+        .result = CTAP2_ERR_INVALID_CBOR,
+    };
+    if (fido_plugin_vendor(&vendor)) {
+        if (vendor.response_len > vendor.response_capacity) {
+            return CTAP2_ERR_PROCESSING;
+        }
+        res_APDU_size = (uint16_t)vendor.response_len;
+        return vendor.result;
     }
     if (data[0] >= CTAP_VENDOR_BACKUP) {
         return cbor_vendor_generic(data[0], data + 1, len - 1);

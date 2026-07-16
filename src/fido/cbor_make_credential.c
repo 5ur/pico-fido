@@ -27,6 +27,7 @@
 #include "mbedtls/sha256.h"
 #include "random.h"
 #include "crypto_utils.h"
+#include "plugin_policy.h"
 
 char *rp_id = NULL, *user_name = NULL, *display_name = NULL;
 
@@ -212,6 +213,10 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         }
     }
     CBOR_PARSE_MAP_END(map, 1);
+    if (!fido_plugin_authorize(PICO_FIDO_PLUGIN_OP_MAKE_CREDENTIAL)) {
+        CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+    }
+    file_t *active_pin = fido_plugin_active_pin_file();
     rp_id = rp.id.data;
     user_name = user.parent.name.data;
     display_name = user.displayName.data;
@@ -225,7 +230,7 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
             if (check_user_presence() == false) {
                 CBOR_ERROR(CTAP2_ERR_OPERATION_DENIED);
             }
-            if (!file_has_data(ef_pin)) {
+            if (!file_has_data(active_pin)) {
                 CBOR_ERROR(CTAP2_ERR_PIN_NOT_SET);
             }
             else {
@@ -341,17 +346,17 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         //rup = ptrue;
     }
     if (get_opts() & FIDO2_OPT_AUV) {
-        if (!file_has_data(ef_pin) || (pinUvAuthParam.present == false && options.uv != ptrue)) { //6.2, 6.4
+        if (!file_has_data(active_pin) || (pinUvAuthParam.present == false && options.uv != ptrue)) { //6.2, 6.4
             CBOR_ERROR(CTAP2_ERR_PUAT_REQUIRED);
         }
     }
     else if (get_opts() & FIDO2_OPT_MCUV_NOTRQD) {
-        if (file_has_data(ef_pin) && options.uv == pfalse && pinUvAuthParam.present == false && options.rk == ptrue) { //7.1
+        if (file_has_data(active_pin) && options.uv == pfalse && pinUvAuthParam.present == false && options.rk == ptrue) { //7.1
             CBOR_ERROR(CTAP2_ERR_PUAT_REQUIRED);
         }
     }
     else {
-        if (file_has_data(ef_pin) && pinUvAuthParam.present == false && options.uv == pfalse) { //8.1
+        if (file_has_data(active_pin) && pinUvAuthParam.present == false && options.uv == pfalse) { //8.1
             CBOR_ERROR(CTAP2_ERR_PUAT_REQUIRED);
         }
     }

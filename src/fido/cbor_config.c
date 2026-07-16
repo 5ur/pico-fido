@@ -28,6 +28,7 @@
 #include "mbedtls/chachapoly.h"
 #include "mbedtls/sha256.h"
 #include "file.h"
+#include "plugin_policy.h"
 
 extern uint8_t keydev_dec[32];
 extern bool has_keydev_dec;
@@ -36,6 +37,8 @@ int cbor_config(const uint8_t *data, size_t len) {
     CborValue map;
     CborError error = CborNoError;
     uint64_t subcommand = 0, pinUvAuthProtocol = 0, vendorCommandId = 0, newMinPinLength = 0, vendorParamInt = 0;
+    const bool *vendorParamBool = NULL;
+    bool vendorParamIntPresent = false;
     CborByteString pinUvAuthParam = { 0 }, vendorParamByteString = { 0 };
     CborCharString minPinLengthRPIDs[MAX_RPIDS_MINPIN_LENGTH] = { 0 }, vendorParamTextString = { 0 };
     size_t resp_size = 0, raw_subpara_len = 0, minPinLengthRPIDs_len = 0;
@@ -75,9 +78,16 @@ int cbor_config(const uint8_t *data, size_t len) {
                     }
                     else if (subpara == 0x03) {
                         CBOR_FIELD_GET_UINT(vendorParamInt, 2);
+                        vendorParamIntPresent = true;
                     }
                     else if (subpara == 0x04) {
                         CBOR_FIELD_GET_TEXT(vendorParamTextString, 2);
+                    }
+                    else if (subpara == 0x05) {
+                        CBOR_FIELD_GET_BOOL(vendorParamBool, 2);
+                    }
+                    else {
+                        CBOR_ERROR(CTAP2_ERR_INVALID_SUBCOMMAND);
                     }
                 }
                 else if (subcommand == 0x03) { // Extensions
@@ -118,6 +128,11 @@ int cbor_config(const uint8_t *data, size_t len) {
 
     cbor_encoder_init(&encoder, ctap_resp->init.data + 1, CTAP_MAX_CBOR_PAYLOAD, 0);
 
+    const bool plugin_config = subcommand == 0xFF && fido_plugin_config_supported(vendorCommandId);
+    if (!plugin_config && !fido_plugin_authorize(PICO_FIDO_PLUGIN_OP_CONFIG)) {
+        CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+    }
+
     if (pinUvAuthParam.present == false) {
         CBOR_ERROR(CTAP2_ERR_PUAT_REQUIRED);
     }
@@ -144,6 +159,7 @@ int cbor_config(const uint8_t *data, size_t len) {
     }
 
     if (subcommand == 0xFF) {
+        file_t *active_key = fido_plugin_active_device_key_file();
         if (vendorCommandId == CTAP_CONFIG_AUT_DISABLE){
             if (!file_has_data(ef_keydev_enc)) {
                 CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
@@ -151,13 +167,13 @@ int cbor_config(const uint8_t *data, size_t len) {
             if (has_keydev_dec == false) {
                 CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
             }
-            file_put_data(ef_keydev, keydev_dec, sizeof(keydev_dec));
+            file_put_data(active_key, keydev_dec, sizeof(keydev_dec));
             mbedtls_platform_zeroize(keydev_dec, sizeof(keydev_dec));
             file_put_data(ef_keydev_enc, NULL, 0); // Set ef to 0 bytes
             flash_commit();
         }
         else if (vendorCommandId == CTAP_CONFIG_AUT_ENABLE) {
-            if (!file_has_data(ef_keydev)) {
+            if (!file_has_data(active_key)) {
                 CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
             }
             if (mse.init == false) {
@@ -174,7 +190,7 @@ int cbor_config(const uint8_t *data, size_t len) {
             random_fill_buffer(key_dev_enc, 12);
             mbedtls_chachapoly_init(&chatx);
             mbedtls_chachapoly_setkey(&chatx, vendorParamByteString.data);
-            ret = mbedtls_chachapoly_encrypt_and_tag(&chatx, file_get_size(ef_keydev), key_dev_enc, NULL, 0, file_get_data(ef_keydev), key_dev_enc + 12, key_dev_enc + 12 + file_get_size(ef_keydev));
+            ret = mbedtls_chachapoly_encrypt_and_tag(&chatx, file_get_size(active_key), key_dev_enc, NULL, 0, file_get_data(active_key), key_dev_enc + 12, key_dev_enc + 12 + file_get_size(active_key));
             mbedtls_chachapoly_free(&chatx);
             if (ret != 0) {
                 CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
@@ -182,8 +198,8 @@ int cbor_config(const uint8_t *data, size_t len) {
 
             file_put_data(ef_keydev_enc, key_dev_enc, sizeof(key_dev_enc));
             mbedtls_platform_zeroize(key_dev_enc, sizeof(key_dev_enc));
-            file_put_data(ef_keydev, key_dev_enc, file_get_size(ef_keydev)); // Overwrite ef with 0
-            file_put_data(ef_keydev, NULL, 0); // Set ef to 0 bytes
+            file_put_data(active_key, key_dev_enc, file_get_size(active_key)); // Overwrite ef with 0
+            file_put_data(active_key, NULL, 0); // Set ef to 0 bytes
             flash_commit();
         }
         else if (vendorCommandId == CTAP_CONFIG_EA_UPLOAD) {
@@ -218,6 +234,26 @@ int cbor_config(const uint8_t *data, size_t len) {
         else if (vendorCommandId == CTAP_CONFIG_MCUV_NOTRQD) {
             set_opts(get_opts() ^ FIDO2_OPT_MCUV_NOTRQD);
         }
+        else if (plugin_config) {
+            pico_fido_plugin_config_t config = {
+                .struct_size = sizeof(config),
+                .command = vendorCommandId,
+                .integer = vendorParamInt,
+                .bytes = vendorParamByteString.data,
+                .bytes_len = (uint32_t)vendorParamByteString.len,
+                .integer_present = vendorParamIntPresent,
+                .bytes_present = vendorParamByteString.present,
+                .boolean_present = vendorParamBool != NULL,
+                .boolean_value = vendorParamBool == ptrue,
+                .result = CTAP2_ERR_INVALID_SUBCOMMAND,
+            };
+            if (!fido_plugin_configure(&config)) {
+                CBOR_ERROR(CTAP2_ERR_INVALID_SUBCOMMAND);
+            }
+            if (config.result != 0) {
+                CBOR_ERROR(config.result);
+            }
+        }
         else {
             CBOR_ERROR(CTAP2_ERR_INVALID_SUBCOMMAND);
         }
@@ -241,6 +277,7 @@ int cbor_config(const uint8_t *data, size_t len) {
         }
     }
     else if (subcommand == 0x03) {
+        file_t *active_pin = fido_plugin_active_pin_file();
         uint8_t currentMinPinLen = 4;
         file_t *ef_minpin = file_search_by_fid(EF_MINPINLEN, NULL, SPECIFY_EF);
         if (file_has_data(ef_minpin)) {
@@ -252,10 +289,10 @@ int cbor_config(const uint8_t *data, size_t len) {
         else if (newMinPinLength > 0 && newMinPinLength < currentMinPinLen) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
-        if (forceChangePin == ptrue && !file_has_data(ef_pin)) {
+        if (forceChangePin == ptrue && !file_has_data(active_pin)) {
             CBOR_ERROR(CTAP2_ERR_PIN_NOT_SET);
         }
-        if (file_has_data(ef_pin) && file_get_data(ef_pin)[1] < newMinPinLength) {
+        if (file_has_data(active_pin) && file_get_data(active_pin)[1] < newMinPinLength) {
             forceChangePin = ptrue;
         }
         if (forceChangePin) {

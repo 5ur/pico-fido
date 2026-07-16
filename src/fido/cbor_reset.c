@@ -28,8 +28,12 @@
 #endif
 #include "fs/phy.h"
 #include "files.h"
+#include "plugin_policy.h"
 
 int cbor_reset(void) {
+    if (!fido_plugin_authorize(PICO_FIDO_PLUGIN_OP_RESET)) {
+        return CTAP2_ERR_PIN_AUTH_INVALID;
+    }
 #ifndef ENABLE_EMULATION
 #if defined(ENABLE_POWER_ON_RESET) && ENABLE_POWER_ON_RESET == 1
     if (!(phy_data.opts & PHY_OPT_DISABLE_POWER_RESET) && board_millis() > 10000) {

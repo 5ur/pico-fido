@@ -26,7 +26,7 @@
 #include "version.h"
 #include "hid/ctap_hid.h"
 #include "usb.h"
-#include "audit.h"
+#include "plugin_events.h"
 #if defined(PICO_PLATFORM)
 #include "bsp/board.h"
 #endif
@@ -606,7 +606,7 @@ static int cmd_otp(void) {
 #define INS_OTP             0x01
 
 static const cmd_t cmds[] = {
-    { INS_OTP, cmd_otp, CMD_FLAG_AUDIT_LOG },
+    { INS_OTP, cmd_otp, CMD_FLAG_NOTIFY_PLUGIN },
     { 0x00, 0x0, CMD_FLAG_NONE }
 };
 
@@ -617,13 +617,17 @@ static int otp_process_apdu(void) {
     if (cap_supported(CAP_OTP)) {
         for (const cmd_t *cmd = cmds; cmd->ins != 0x00; cmd++) {
             if (cmd->ins == INS(apdu)) {
-                audit_entry_set_current_event(AUDIT_EVT_APP_EVT | 0x0400 | P1(apdu));
                 int r = cmd->cmd_handler();
-                if (cmd->flags & CMD_FLAG_AUDIT_LOG && (P1(apdu) != 0x10 && P1(apdu) != 0x13 && P1(apdu) != 0x14)) {
-                    if (cmd->flags & CMD_FLAG_CRITICAL) {
-                        audit_entry_set_current_flags(AUDIT_EF_CRITICAL);
-                    }
-                    audit_log_current_entry_with_result(r);
+                if ((cmd->flags & CMD_FLAG_NOTIFY_PLUGIN) &&
+                    P1(apdu) != 0x10 && P1(apdu) != 0x13 && P1(apdu) != 0x14) {
+                    pk_plugin_notify_command(
+                        PICO_FIDO_PLUGIN_EVENT_SOURCE_OTP,
+                        P1(apdu),
+                        make_uint16_be(P1(apdu), P2(apdu)),
+                        (cmd->flags & CMD_FLAG_SECURITY_SENSITIVE)
+                            ? PK_PLUGIN_EVENT_FLAG_SECURITY_SENSITIVE
+                            : PK_PLUGIN_EVENT_FLAG_NONE,
+                        r);
                 }
                 return r;
             }

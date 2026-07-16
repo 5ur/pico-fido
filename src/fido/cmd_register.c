@@ -116,8 +116,8 @@ int cmd_register(void) {
 }
 
 static const cmd_t cmds[] = {
-    { CTAP_REGISTER, cmd_register, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
-    { CTAP_AUTHENTICATE, cmd_authenticate, CMD_FLAG_AUDIT_LOG },
+    { CTAP_REGISTER, cmd_register, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
+    { CTAP_AUTHENTICATE, cmd_authenticate, CMD_FLAG_NOTIFY_PLUGIN },
     { CTAP_VERSION, cmd_version, CMD_FLAG_NONE },
     { 0x00, 0x0, CMD_FLAG_NONE }
 };

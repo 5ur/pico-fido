@@ -30,6 +30,7 @@
 #include "credential.h"
 #include "mbedtls/sha256.h"
 #include "random.h"
+#include "plugin_policy.h"
 
 int cbor_get_assertion(const uint8_t *data, size_t len, bool next);
 extern char *rp_id, *user_name, *display_name;
@@ -203,6 +204,11 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     }
     CBOR_PARSE_MAP_END(map, 1);
 
+    if (!fido_plugin_authorize(PICO_FIDO_PLUGIN_OP_GET_ASSERTION)) {
+        CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+    }
+    file_t *active_pin = fido_plugin_active_pin_file();
+
     if (rpId.present == false || clientDataHash.present == false) {
         CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
     }
@@ -223,7 +229,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                 if (check_user_presence() == false) {
                     CBOR_ERROR(CTAP2_ERR_OPERATION_DENIED);
                 }
-                if (!file_has_data(ef_pin)) {
+                if (!file_has_data(active_pin)) {
                     CBOR_ERROR(CTAP2_ERR_PIN_NOT_SET);
                 }
                 else {

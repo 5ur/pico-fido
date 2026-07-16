@@ -30,7 +30,7 @@
 #include "mbedtls/hkdf.h"
 #include "mbedtls/md.h"
 #include <stdlib.h>
-#include "audit.h"
+#include "plugin_events.h"
 
 #define MAX_OATH_CRED   255
 #define CHALLENGE_LEN   8
@@ -1107,21 +1107,21 @@ static int cmd_get_credential(void) {
 #define INS_GET_CREDENTIAL  0xb5
 
 static const cmd_t cmds[] = {
-    { INS_PUT, cmd_put, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
-    { INS_DELETE, cmd_delete, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
-    { INS_SET_CODE, cmd_set_code, CMD_FLAG_AUDIT_LOG },
-    { INS_RESET, cmd_reset, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
-    { INS_RENAME, cmd_rename, CMD_FLAG_AUDIT_LOG },
+    { INS_PUT, cmd_put, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
+    { INS_DELETE, cmd_delete, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
+    { INS_SET_CODE, cmd_set_code, CMD_FLAG_NOTIFY_PLUGIN },
+    { INS_RESET, cmd_reset, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
+    { INS_RENAME, cmd_rename, CMD_FLAG_NOTIFY_PLUGIN },
     { INS_LIST, cmd_list, CMD_FLAG_NONE },
     { INS_VALIDATE, cmd_validate, CMD_FLAG_NONE },
-    { INS_CALCULATE, cmd_calculate, CMD_FLAG_AUDIT_LOG },
-    { INS_CALC_ALL, cmd_calculate_all, CMD_FLAG_AUDIT_LOG },
+    { INS_CALCULATE, cmd_calculate, CMD_FLAG_NOTIFY_PLUGIN },
+    { INS_CALC_ALL, cmd_calculate_all, CMD_FLAG_NOTIFY_PLUGIN },
     { INS_SEND_REMAINING, cmd_send_remaining, CMD_FLAG_NONE },
-    { INS_SET_PIN, cmd_set_otp_pin, CMD_FLAG_AUDIT_LOG },
-    { INS_CHANGE_PIN, cmd_change_otp_pin, CMD_FLAG_AUDIT_LOG },
+    { INS_SET_PIN, cmd_set_otp_pin, CMD_FLAG_NOTIFY_PLUGIN },
+    { INS_CHANGE_PIN, cmd_change_otp_pin, CMD_FLAG_NOTIFY_PLUGIN },
     { INS_VERIFY_PIN, cmd_verify_otp_pin, CMD_FLAG_NONE },
     { INS_VERIFY_CODE, cmd_verify_hotp, CMD_FLAG_NONE },
-    { INS_GET_CREDENTIAL, cmd_get_credential, CMD_FLAG_AUDIT_LOG },
+    { INS_GET_CREDENTIAL, cmd_get_credential, CMD_FLAG_NOTIFY_PLUGIN },
     { 0x00, 0x0, CMD_FLAG_NONE }
 };
 
@@ -1132,13 +1132,16 @@ static int oath_process_apdu(void) {
     if (cap_supported(CAP_OATH)) {
         for (const cmd_t *cmd = cmds; cmd->ins != 0x00; cmd++) {
             if (cmd->ins == INS(apdu)) {
-                audit_entry_set_current_event(AUDIT_EVT_APP_EVT | 0x0300 | INS(apdu));
                 int r = cmd->cmd_handler();
-                if (cmd->flags & CMD_FLAG_AUDIT_LOG) {
-                    if (cmd->flags & CMD_FLAG_CRITICAL) {
-                        audit_entry_set_current_flags(AUDIT_EF_CRITICAL);
-                    }
-                    audit_log_current_entry_with_result(r);
+                if (cmd->flags & CMD_FLAG_NOTIFY_PLUGIN) {
+                    pk_plugin_notify_command(
+                        PICO_FIDO_PLUGIN_EVENT_SOURCE_OATH,
+                        INS(apdu),
+                        make_uint16_be(P1(apdu), P2(apdu)),
+                        (cmd->flags & CMD_FLAG_SECURITY_SENSITIVE)
+                            ? PK_PLUGIN_EVENT_FLAG_SECURITY_SENSITIVE
+                            : PK_PLUGIN_EVENT_FLAG_NONE,
+                        r);
                 }
                 return r;
             }

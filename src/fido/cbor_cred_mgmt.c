@@ -23,6 +23,7 @@
 #include "files.h"
 #include "apdu.h"
 #include "credential.h"
+#include "plugin_policy.h"
 
 uint8_t rp_counter = 1;
 uint8_t rp_total = 0;
@@ -109,6 +110,10 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
         }
     }
     CBOR_PARSE_MAP_END(map, 1);
+
+    if (!fido_plugin_authorize(PICO_FIDO_PLUGIN_OP_CREDENTIAL_MANAGEMENT)) {
+        CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+    }
 
     if (subcommand != 0x03 && subcommand != 0x05) {
         if (pinUvAuthParam.present == false) {

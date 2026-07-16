@@ -41,7 +41,8 @@
 #include "version.h"
 #include "crypto_utils.h"
 #include "otp.h"
-#include "audit.h"
+#include "plugin_events.h"
+#include "plugin_policy.h"
 
 static int fido_unload(void);
 
@@ -221,7 +222,8 @@ static int x509_create_cert(mbedtls_ecdsa_context *ecdsa, uint8_t *buffer, size_
 }
 
 int load_keydev(uint8_t key[32]) {
-    if (has_keydev_dec == false && !file_has_data(ef_keydev)) {
+    file_t *key_file = fido_plugin_active_device_key_file();
+    if (has_keydev_dec == false && !file_has_data(key_file)) {
         return PICOKEYS_ERR_MEMORY_FATAL;
     }
 
@@ -229,19 +231,19 @@ int load_keydev(uint8_t key[32]) {
         memcpy(key, keydev_dec, sizeof(keydev_dec));
     }
     else {
-        uint16_t fid_size = file_get_size(ef_keydev);
+        uint16_t fid_size = file_get_size(key_file);
         if (fid_size == 32) {
-            memcpy(key, file_get_data(ef_keydev), 32);
+            memcpy(key, file_get_data(key_file), 32);
             if (otp_key_1 && aes_decrypt(otp_key_1, NULL, 32 * 8, PICOKEYS_AES_MODE_CBC, key, 32) != PICOKEYS_OK) {
                 return PICOKEYS_EXEC_ERROR;
             }
         }
         else if (fid_size == 33 || fid_size == 61) {
-            uint8_t format = *file_get_data(ef_keydev);
+            uint8_t format = *file_get_data(key_file);
             if (format == 0x01 || format == 0x02 || format == 0x03) { // Format indicator
                 if (format == 0x02 || format == 0x03) {
                     uint8_t tmp_key[61], version = format == 0x03 ? 2 : 1;
-                    memcpy(tmp_key, file_get_data(ef_keydev), sizeof(tmp_key));
+                    memcpy(tmp_key, file_get_data(key_file), sizeof(tmp_key));
                     int ret = decrypt_with_aad(session_pin, tmp_key + 1, 60, version, key);
                     if (ret != PICOKEYS_OK) {
                         return PICOKEYS_EXEC_ERROR;
@@ -253,13 +255,13 @@ int load_keydev(uint8_t key[32]) {
                             mbedtls_platform_zeroize(tmp_key, sizeof(tmp_key));
                             return PICOKEYS_EXEC_ERROR;
                         }
-                        file_put_data(ef_keydev, tmp_key, sizeof(tmp_key));
+                        file_put_data(key_file, tmp_key, sizeof(tmp_key));
                         flash_commit();
                     }
                     mbedtls_platform_zeroize(tmp_key, sizeof(tmp_key));
                 }
                 else {
-                    memcpy(key, file_get_data(ef_keydev) + 1, 32);
+                    memcpy(key, file_get_data(key_file) + 1, 32);
                 }
                 uint8_t kbase[32];
                 derive_kbase(kbase);
@@ -362,6 +364,7 @@ int derive_key(const uint8_t *app_id, bool new_key, uint8_t *key_handle, int cur
 }
 
 int encrypt_keydev_f1(const uint8_t keydev[32]) {
+    file_t *key_file = fido_plugin_active_device_key_file();
     uint8_t kdata[33] = {0};
     kdata[0] = 0x01; // Format indicator
     memcpy(kdata + 1, keydev, 32);
@@ -372,7 +375,7 @@ int encrypt_keydev_f1(const uint8_t keydev[32]) {
     if (ret != PICOKEYS_OK) {
         return ret;
     }
-    ret = file_put_data(ef_keydev, kdata, 33);
+    ret = file_put_data(key_file, kdata, 33);
     mbedtls_platform_zeroize(kdata, sizeof(kdata));
     flash_commit();
     return ret;
@@ -457,7 +460,6 @@ int scan_files_fido(void) {
         printf("FATAL ERROR: Global counter not found in memory!\r\n");
     }
     ef_pin = file_search_by_fid(EF_PIN, NULL, SPECIFY_EF);
-    ef_pin_admin = file_search_by_fid(EF_PIN_ADMIN, NULL, SPECIFY_EF);
     ef_authtoken = file_search_by_fid(EF_AUTHTOKEN, NULL, SPECIFY_EF);
     if (ef_authtoken) {
         if (!file_has_data(ef_authtoken)) {
@@ -504,11 +506,13 @@ void scan_all(void) {
 
 extern bool needs_power_cycle;
 void init_fido(void) {
+    fido_plugin_detach();
     scan_all();
     credential_migrate_rp_secure();
 #ifdef ENABLE_OTP_APP
     init_otp();
 #endif
+    fido_plugin_attach();
     needs_power_cycle = false;
 }
 
@@ -612,8 +616,8 @@ static int cmd_cbor(void) {
 }
 
 static const cmd_t cmds[] = {
-    { CTAP_REGISTER, cmd_register, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
-    { CTAP_AUTHENTICATE, cmd_authenticate, CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL },
+    { CTAP_REGISTER, cmd_register, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
+    { CTAP_AUTHENTICATE, cmd_authenticate, CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE },
     { CTAP_VERSION, cmd_version, CMD_FLAG_NONE },
     { CTAP_CBOR, cmd_cbor, CMD_FLAG_NONE},
     { 0x41, cmd_vendor, CMD_FLAG_NONE },
@@ -627,13 +631,16 @@ int fido_process_apdu(void) {
     if (cap_supported(CAP_U2F)) {
         for (const cmd_t *cmd = cmds; cmd->ins != 0x00; cmd++) {
             if (cmd->ins == INS(apdu)) {
-                audit_entry_set_current_event(AUDIT_EVT_APP_EVT | 0x0200 | INS(apdu));
                 int r = cmd->cmd_handler();
-                if (cmd->flags & CMD_FLAG_AUDIT_LOG) {
-                    if (cmd->flags & CMD_FLAG_CRITICAL) {
-                        audit_entry_set_current_flags(AUDIT_EF_CRITICAL);
-                    }
-                    audit_log_current_entry_with_result(r);
+                if (cmd->flags & CMD_FLAG_NOTIFY_PLUGIN) {
+                    pk_plugin_notify_command(
+                        PICO_FIDO_PLUGIN_EVENT_SOURCE_FIDO,
+                        INS(apdu),
+                        make_uint16_be(P1(apdu), P2(apdu)),
+                        (cmd->flags & CMD_FLAG_SECURITY_SENSITIVE)
+                            ? PK_PLUGIN_EVENT_FLAG_SECURITY_SENSITIVE
+                            : PK_PLUGIN_EVENT_FLAG_NONE,
+                        r);
                 }
                 return r;
             }

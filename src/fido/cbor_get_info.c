@@ -26,6 +26,7 @@
 #include "crypto_utils.h"
 #include "random.h"
 #include "mbedtls/hkdf.h"
+#include "plugin_policy.h"
 
 #define CRED_STORE_STATE_SIZE 16
 #define DEV_STATE_SIZE (2 * CRED_STORE_STATE_SIZE)
@@ -135,7 +136,7 @@ int cbor_get_info(void) {
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "authnrCfg"));
     CBOR_CHECK(cbor_encode_boolean(&arrayEncoder, true));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "clientPin"));
-    CBOR_CHECK(cbor_encode_boolean(&arrayEncoder, file_has_data(ef_pin)));
+    CBOR_CHECK(cbor_encode_boolean(&arrayEncoder, file_has_data(fido_plugin_active_pin_file())));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "largeBlobs"));
     CBOR_CHECK(cbor_encode_boolean(&arrayEncoder, true));
     CBOR_CHECK(cbor_encode_text_stringz(&arrayEncoder, "perCredMgmtRO"));

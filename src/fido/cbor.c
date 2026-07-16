@@ -27,7 +27,7 @@
 #include "management.h"
 #include "ctap2_cbor.h"
 #include "version.h"
-#include "audit.h"
+#include "plugin_events.h"
 
 const bool _btrue = true, _bfalse = false;
 
@@ -46,55 +46,57 @@ int cbor_parse(uint8_t cmd, const uint8_t *data, size_t len) {
     if (len > 0) {
         DEBUG_DATA(data + 1, len - 1);
     }
-    int r = CTAP1_ERR_INVALID_CMD, cmd_flags = CMD_FLAG_NONE;
-    audit_entry_set_current_event(AUDIT_EVT_APP_EVT | 0x0200 | 0x40 | data[0]);
+    int r = CTAP1_ERR_INVALID_CMD;
+    cmd_flags_t cmd_flags = CMD_FLAG_NONE;
+    uint16_t event_source = PICO_FIDO_PLUGIN_EVENT_SOURCE_CTAP;
+    uint16_t event_command = len > 0 ? data[0] : 0;
     if (cap_supported(CAP_FIDO2)) {
         if (cmd == CTAPHID_CBOR) {
             if (data[0] != CTAP_GET_NEXT_ASSERTION) {
                 reset_gna_state();
             }
             if (data[0] == CTAP_MAKE_CREDENTIAL) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE;
                 r = cbor_make_credential(data + 1, len - 1);
             }
             if (data[0] == CTAP_GET_INFO) {
                 r = cbor_get_info();
             }
             else if (data[0] == CTAP_RESET) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE;
                 r = cbor_reset();
             }
             else if (data[0] == CTAP_CLIENT_PIN) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG | CMD_FLAG_CRITICAL;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN | CMD_FLAG_SECURITY_SENSITIVE;
                 r = cbor_client_pin(data + 1, len - 1);
             }
             else if (data[0] == CTAP_GET_ASSERTION) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN;
                 r = cbor_get_assertion(data + 1, len - 1, false);
             }
             else if (data[0] == CTAP_GET_NEXT_ASSERTION) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN;
                 r = cbor_get_next_assertion(data + 1, len - 1);
             }
             else if (data[0] == CTAP_SELECTION) {
                 r = cbor_selection();
             }
             else if (data[0] == CTAP_CREDENTIAL_MGMT || data[0] == 0x41) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN;
                 r = cbor_cred_mgmt(data + 1, len - 1);
             }
             else if (data[0] == CTAP_CONFIG) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN;
                 r = cbor_config(data + 1, len - 1);
             }
             else if (data[0] == CTAP_LARGE_BLOBS) {
-                cmd_flags = CMD_FLAG_AUDIT_LOG;
+                cmd_flags = CMD_FLAG_NOTIFY_PLUGIN;
                 r = cbor_large_blobs(data + 1, len - 1);
             }
         }
         else if (cmd == CTAP_VENDOR_CBOR) {
-            cmd_flags = CMD_FLAG_AUDIT_LOG;
-            audit_entry_set_current_event(AUDIT_EVT_APP_EVT | 0x0200 | 0x80 | data[0]);
+            cmd_flags = CMD_FLAG_NOTIFY_PLUGIN;
+            event_source = PICO_FIDO_PLUGIN_EVENT_SOURCE_VENDOR;
             r = cbor_vendor(data, len);
         }
         else if (cmd == 0xC2) {
@@ -108,11 +110,15 @@ int cbor_parse(uint8_t cmd, const uint8_t *data, size_t len) {
             r = CTAP1_ERR_INVALID_CMD;
         }
     }
-    if (cmd_flags & CMD_FLAG_AUDIT_LOG) {
-        if (cmd_flags & CMD_FLAG_CRITICAL) {
-            audit_entry_set_current_flags(AUDIT_EF_CRITICAL);
-        }
-        audit_log_current_entry_with_result(r);
+    if (cmd_flags & CMD_FLAG_NOTIFY_PLUGIN) {
+        pk_plugin_notify_command(
+            event_source,
+            event_command,
+            0,
+            (cmd_flags & CMD_FLAG_SECURITY_SENSITIVE)
+                ? PK_PLUGIN_EVENT_FLAG_SECURITY_SENSITIVE
+                : PK_PLUGIN_EVENT_FLAG_NONE,
+            r);
     }
     return r;
 }
